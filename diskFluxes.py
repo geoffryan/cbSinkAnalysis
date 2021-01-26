@@ -396,8 +396,6 @@ def analyzeSingle(filepack, archiveName="diskFluxArchive.h5", Rmin=0.0,
     print("    Done.")
     
     Mdot0 = 1.0  # 3*np.pi*nu
-    Rmin = 5.0
-    Rmax = np.inf
 
     if makeFrames:
         makeFramePlots(t, R, Sig, Pi, Vr, Om, Mdot, Jdot, FJ_adv, FJ_rey,
@@ -440,8 +438,6 @@ def analyzeSingleArchive(archiveName, Rmin=0.0, Rmax=np.inf,
     nt = len(t)
     tP = t / (2*np.pi)
 
-    Rmin = 5.0
-    Rmax = np.inf
     Mdot0 = 1.0
 
     Jdot = T_grav - FJ_adv - FJ_visc
