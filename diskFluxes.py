@@ -483,8 +483,9 @@ def analyzeSingleArchive(archiveName, Rmin=0.0, Rmax=np.inf,
     Jtot = Jr[:, -1]
 
     fig, ax = plt.subplots(1, 2, figsize=(12, 5))
-    ax[0].plot(tP, Mtot)
-    ax[1].plot(tP, Jtot)
+    sortInds = np.argsort(tP)
+    ax[0].plot(tP[sortInds], Mtot[sortInds])
+    ax[1].plot(tP[sortInds], Jtot[sortInds])
 
     ax[0].set(xlabel=r'$t$ ($T_{\mathrm{bin}}^{-1}$)',
               ylabel=r'$M_{\mathrm{tot}}$')
