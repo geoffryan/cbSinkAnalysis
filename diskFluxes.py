@@ -1,5 +1,9 @@
 import sys
+import time
 from pathlib import Path
+from multiprocessing import Pool
+import functools
+import argparse
 import numpy as np
 import matplotlib as mpl
 mpl.rcParams['text.usetex'] = True
@@ -7,7 +11,6 @@ mpl.rcParams['font.family'] = 'serif'
 mpl.rcParams['mathtext.fontset'] = 'cm'
 mpl.rcParams['mathtext.rm'] = 'serif'
 mpl.rcParams['legend.labelspacing'] = 0.2
-
 import matplotlib.pyplot as plt
 import h5py as h5
 import discopy as dp
@@ -269,7 +272,10 @@ def makeFramePlots(t, R, Sig, Pi, Vr, Om, Mdot, Jdot, FJ_adv, FJ_rey,
     plt.close(fig)
 
 
-def analyzeSingle(idx, filename, archiveName):
+def analyzeSingle(filepack, archiveName="diskFluxArchive.h5", Rmin=0.0,
+                  Rmax=np.inf, makeFrames=False):
+
+    idx, filename = filepack
 
     print("Loading", filename)
     opts = dp.util.loadOpts(filename)
@@ -355,23 +361,37 @@ def analyzeSingle(idx, filename, archiveName):
     FJ_rey = FJ_adv - FJ_acc
 
     Jdot = TG - FJ_visc - FJ_adv
-    
     print("    Done.")
 
     print("Storing fluxes in", archiveName, "...")
-    with h5.File(archiveName, "r+") as f:
-        f['t'][idx] = t
-        f['Sig'][idx, :] = Sig
-        f['Pi'][idx, :] = Pi
-        f['Vr'][idx, :] = Vr
-        f['Om'][idx, :] = Om
-        f['Mdot'][idx, :] = Mdot
-        f['FJ_adv'][idx, :] = FJ_adv
-        f['FJ_visc'][idx, :] = FJ_visc
-        f['T_grav'][idx, :] = TG
-        f['Qheat_visc'][idx, :] = Qheat_Ave
-        f['planets'][idx, :, :] = planetDat
-        
+
+    maxTries = 100
+    tries = 0
+    f = None
+
+    while tries < maxTries:
+        try:
+            f = h5.File(archiveName, "r+")
+            break
+        except OSError:
+            tries += 1
+            # print("File busy, attempt", tries, "of", maxTries)
+            time.sleep(0.05)
+    if f is None:
+        f = h5.File(archiveName, "r+")
+
+    f['t'][idx] = t
+    f['Sig'][idx, :] = Sig
+    f['Pi'][idx, :] = Pi
+    f['Vr'][idx, :] = Vr
+    f['Om'][idx, :] = Om
+    f['Mdot'][idx, :] = Mdot
+    f['FJ_adv'][idx, :] = FJ_adv
+    f['FJ_visc'][idx, :] = FJ_visc
+    f['T_grav'][idx, :] = TG
+    f['Qheat_visc'][idx, :] = Qheat_Ave
+    f['planets'][idx, :, :] = planetDat
+    f.close()
 
     print("    Done.")
     
@@ -379,9 +399,10 @@ def analyzeSingle(idx, filename, archiveName):
     Rmin = 5.0
     Rmax = np.inf
 
-    makeFramePlots(t, R, Sig, Pi, Vr, Om, Mdot, Jdot, FJ_adv, FJ_rey,
-                   FJ_visc, TG, Qheat_Ave, nu, Rmin, Rmax, Mdot0, name,
-                   plotDir, "png")
+    if makeFrames:
+        makeFramePlots(t, R, Sig, Pi, Vr, Om, Mdot, Jdot, FJ_adv, FJ_rey,
+                       FJ_visc, TG, Qheat_Ave, nu, Rmin, Rmax, Mdot0, name,
+                       plotDir, "png")
 
     
 def getPackStats(f, axis=0):
@@ -397,7 +418,8 @@ def getPackStats(f, axis=0):
     return np.array((f_mean, f_sig, f_mean_err))
 
 
-def analyzeSingleArchive(archiveName, remakeFrames=False):
+def analyzeSingleArchive(archiveName, Rmin=0.0, Rmax=np.inf,
+                         makeFrames=False):
 
     with h5.File(archiveName, "r") as f:
         t = f['t'][...]
@@ -431,7 +453,7 @@ def analyzeSingleArchive(archiveName, remakeFrames=False):
     if not plotDir.exists():
         plotDir.mkdir()
 
-    if remakeFrames:
+    if makeFrames:
         for i in range(nt):
             name = "{0:04d}".format(i)
             makeFramePlots(t[i], R, Sig[i], Pi[i], Vr[i], Om[i], Mdot[i],
@@ -479,7 +501,8 @@ def analyzeSingleArchive(archiveName, remakeFrames=False):
     plt.close(fig)
 
 
-def analyzeCheckpoints(filenames):
+def analyzeCheckpoints(filenames, archiveName='diskFluxArchive.h5',
+                       ncpu=None, Rmin=0.0, Rmax=np.inf, makeFrames=False):
 
     nt = len(filenames)
     pars = dp.util.loadPars(filenames[0])
@@ -490,8 +513,6 @@ def analyzeCheckpoints(filenames):
     planetDat = dat[4]
 
     nr = len(rjph)-1
-
-    archiveName = Path("diskFluxArchive.h5")
 
     print("Initializing archive HDF5 file:", archiveName)
 
@@ -514,19 +535,26 @@ def analyzeCheckpoints(filenames):
         for key in pars:
             f['Pars'].create_dataset(key, data=pars[key])
 
-    for i, fname in enumerate(filenames):
-        analyzeSingle(i, fname, archiveName)
+    if ncpu is None or ncpu <= 1:
+        for i, fname in enumerate(filenames):
+            analyzeSingle((i, fname), archiveName, Rmin, Rmax, makeFrames)
+    else:
+        map_fn = functools.partial(analyzeSingle, archiveName=archiveName,
+                                   Rmin=Rmin, Rmax=Rmax, makeFrames=makeFrames)
+        with Pool(ncpu) as p:
+            p.map(map_fn, enumerate(filenames))
 
     return archiveName
 
 
-def analyzeArchives(filenames):
+def analyzeArchives(filenames, Rmin, Rmax, makeFrames):
 
     for filename in filenames:
-        analyzeSingleArchive(filename)
+        analyzeSingleArchive(filename, Rmin, Rmax, makeFrames)
 
 
-def analyze(filenames):
+def analyze(filenames, archiveName='diskFluxArchive.h5', ncpu=1,
+            Rmin=0.0, Rmax=np.inf, makeFrames=False):
 
     checkpoints = False
     archives = False
@@ -538,14 +566,26 @@ def analyze(filenames):
             archives = True
 
     if checkpoints:
-        archiveName = analyzeCheckpoints(filenames)
-        analyzeSingleArchive(archiveName)
+        analyzeCheckpoints(filenames, archiveName, ncpu, Rmin, Rmax,
+                           makeFrames)
+        analyzeSingleArchive(archiveName, Rmin, Rmax, False)
 
     elif archives:
-        analyzeArchives(filenames)
+        analyzeArchives(filenames, Rmin, Rmax, makeFrames)
 
 
 if __name__ == "__main__":
 
-    filenames = [Path(x) for x in sys.argv[1:]]
-    analyze(filenames)
+    parser = argparse.ArgumentParser(description="Analyze accretion disks")
+    parser.add_argument('files', nargs='+')
+    parser.add_argument('--ncpu', nargs='?', default=1, type=int)
+    parser.add_argument('--Rmin', nargs='?', default=0.0, type=np.float)
+    parser.add_argument('--Rmax', nargs='?', default=np.inf, type=np.float)
+    parser.add_argument('--makeFrames', action='store_true')
+    parser.add_argument('--archive', nargs=1, default='diskFluxArchive.h5')
+
+    args = parser.parse_args()
+
+    filenames = [Path(x) for x in args.files]
+    analyze(filenames, args.archive, args.ncpu, args.Rmin, args.Rmax,
+            args.makeFrames)
