@@ -1,10 +1,12 @@
 import sys
 import time
+import math
 from pathlib import Path
 from multiprocessing import Pool
 import functools
 import argparse
 import numpy as np
+import scipy.signal
 import matplotlib as mpl
 mpl.rcParams['text.usetex'] = True
 mpl.rcParams['font.family'] = 'serif'
@@ -130,11 +132,11 @@ def plotCombo(ax, x, ypack, mask, kwargs, alpha):
         ax.plot(x[mask], y[mask], **kwargs)
 
 
-def makeFramePlots(t, R, Sig, Pi, Vr, Om, Mdot, Jdot, FJ_adv, FJ_rey,
-                   FJ_visc, TG, Qheat, nu, Rmin, Rmax, Mdot0, name,
-                   plotDir, ext, alphaErr=0.0):
+def makeFramePlots(t, R, Sig, Pi, Vr, Om, Mdot, Jdot, ell, FJ_adv, FJ_rey,
+                   FJ_visc, TG, Qheat, nu, Mdot0, name, plotDir, args,
+                   ext, alphaErr=0.0):
 
-    toPlot = (R >= Rmin) & (R <= Rmax)
+    toPlot = (R >= args.Rmin) & (R <= args.Rmax)
 
     Jdot0 = 0.0
     Jdot1 = 1.0 * Mdot0
@@ -212,14 +214,23 @@ def makeFramePlots(t, R, Sig, Pi, Vr, Om, Mdot, Jdot, FJ_adv, FJ_rey,
     ax[0, 1].axhline(Jdot2, **kwargs2)
     plotCombo(ax[0, 1], R, Jdot, toPlot, kwargsSim, alphaErr)
     
-    ax[1, 0].plot(R[toPlot], Qheat0[toPlot], **kwargs0)
-    ax[1, 0].plot(R[toPlot], Qheat1[toPlot], **kwargs1)
-    ax[1, 0].plot(R[toPlot], Qheat2[toPlot], **kwargs2)
-    plotCombo(ax[1, 0], R, Qheat, toPlot, kwargsSim, alphaErr)
+    ax[1, 0].axhline(Jdot0 / Mdot0, **kwargs0)
+    ax[1, 0].axhline(Jdot1 / Mdot0, **kwargs1)
+    ax[1, 0].axhline(Jdot2 / Mdot0, **kwargs2)
+    plotCombo(ax[1, 0], R, ell, toPlot, kwargsSim, alphaErr)
+    
+    ax[1, 1].plot(R[toPlot], Qheat0[toPlot], **kwargs0)
+    ax[1, 1].plot(R[toPlot], Qheat1[toPlot], **kwargs1)
+    ax[1, 1].plot(R[toPlot], Qheat2[toPlot], **kwargs2)
+    plotCombo(ax[1, 1], R, Qheat, toPlot, kwargsSim, alphaErr)
 
-    ax[0, 0].set(xlabel=r'$R$ (a)', ylabel=r'$\dot{M}$')
-    ax[0, 1].set(xlabel=r'$R$ (a)', ylabel=r'$\dot{J}$')
-    ax[1, 0].set(xlabel=r'$R$ (a)', ylabel=r'$Q_{\mathrm{visc}}$',
+    ax[0, 0].set(xlabel=r'$R$ (a)', ylabel=r'$\dot{M}$',
+                 ylim=(-4, 4))
+    ax[0, 1].set(xlabel=r'$R$ (a)', ylabel=r'$\dot{J}$',
+                 ylim=(-4, 4))
+    ax[1, 0].set(xlabel=r'$R$ (a)', ylabel=r'$\ell = \dot{J} / \dot{M}$',
+                 ylim=(-4, 4))
+    ax[1, 1].set(xlabel=r'$R$ (a)', ylabel=r'$Q_{\mathrm{visc}}$',
                  yscale='log')
 
     ax[1, 0].legend()
@@ -257,11 +268,15 @@ def makeFramePlots(t, R, Sig, Pi, Vr, Om, Mdot, Jdot, FJ_adv, FJ_rey,
     plotCombo(ax[1, 1], R, -FJ_rey, toPlot, kwargsRey, alphaErr)
     plotCombo(ax[1, 2], R, TG, toPlot, kwargsGrav, alphaErr)
 
-    ax[0, 0].set(xlabel=r'$R$ (a)', ylabel=r'$\dot{J}$')
-    ax[0, 1].set(xlabel=r'$R$ (a)', ylabel=r'$\dot{J}_{\mathrm{adv}}$')
+    ax[0, 0].set(xlabel=r'$R$ (a)', ylabel=r'$\dot{J}$',
+                 ylim=(-10, 10))
+    ax[0, 1].set(xlabel=r'$R$ (a)', ylabel=r'$\dot{J}_{\mathrm{adv}}$',
+                 ylim=(-10, 10))
     ax[1, 0].set(xlabel=r'$R$ (a)', ylabel=r'$\dot{J}_{\mathrm{visc}}$')
-    ax[1, 1].set(xlabel=r'$R$ (a)', ylabel=r'$\dot{J}_{\mathrm{Rey}}$')
-    ax[1, 2].set(xlabel=r'$R$ (a)', ylabel=r'$\dot{J}_{\mathrm{grav}}$')
+    ax[1, 1].set(xlabel=r'$R$ (a)', ylabel=r'$\dot{J}_{\mathrm{Rey}}$',
+                 ylim=(-3, 3))
+    ax[1, 2].set(xlabel=r'$R$ (a)', ylabel=r'$\dot{J}_{\mathrm{grav}}$',
+                 ylim=(-1, 1))
 
     ax[0, 0].legend()
     ax[1, 1].legend()
@@ -272,8 +287,7 @@ def makeFramePlots(t, R, Sig, Pi, Vr, Om, Mdot, Jdot, FJ_adv, FJ_rey,
     plt.close(fig)
 
 
-def analyzeSingle(filepack, archiveName="diskFluxArchive.h5", Rmin=0.0,
-                  Rmax=np.inf, makeFrames=False):
+def analyzeSingle(filepack, args):
 
     idx, filename = filepack
 
@@ -290,6 +304,7 @@ def analyzeSingle(filepack, archiveName="diskFluxArchive.h5", Rmin=0.0,
 
     nu = pars['Viscosity']
     planetDat = dat[4]
+    rjph = dat[0]
 
     rho = prim[:, 0]  # r * np.cos(phi)
     P = prim[:, 1]
@@ -361,9 +376,98 @@ def analyzeSingle(filepack, archiveName="diskFluxArchive.h5", Rmin=0.0,
     FJ_rey = FJ_adv - FJ_acc
 
     Jdot = TG - FJ_visc - FJ_adv
+
+    ell = Jdot / Mdot
     print("    Done.")
 
-    print("Storing fluxes in", archiveName, "...")
+    print("Calculating orbital elements")
+
+    GM = 1.0
+    cosp = np.cos(phi)
+    sinp = np.sin(phi)
+    x = r * cosp
+    y = r * sinp
+    vx = vr * cosp - r*vp * sinp
+    vy = vr * sinp + r*vp * cosp
+    v2 = vr*vr + r*r*vp*vp
+
+    slr = (r*r*vp)**2 / GM  # semi-latus rectum
+    e = 0.5*v2 - GM/r  # specific energy, this should be negative
+    
+    ecc = np.sqrt(1 + 2 * slr * e / GM)  # eccentricity squared
+    eccx = (v2*x - r*vr*vx) / GM - cosp  # eccentricity vector-x
+    eccy = (v2*y - r*vr*vy) / GM - sinp  # eccentricity vector-y
+    phip = np.arctan2(eccy, eccx)  # argument of periapse
+
+    a = slr / (-2 * slr * e / GM)  # semi-major axis
+
+    idxa = np.searchsorted(rjph, a) - 1
+    idxp = np.searchsorted(rjph, slr) - 1
+
+    nr = len(R)-1
+    gooda = (idxa >= 0) & (idxa < nr)
+    goodp = (idxp >= 0) & (idxp < nr)
+    idxa = idxa[gooda]
+    idxp = idxp[goodp]
+
+    dV = dp.geom.getDV(dat, opts, pars)
+
+    Rc = 0.5*(rjph[:-1] + rjph[1:])
+    dr = rjph[1:] - rjph[:-1]
+
+    dMe_r = dp.geom.integrate2(rho * e, dat, opts, pars) * Rc * dr
+    dMecc_r = dp.geom.integrate2(rho * ecc, dat, opts, pars) * Rc * dr
+    dMeccx_r = dp.geom.integrate2(rho * eccx, dat, opts, pars) * Rc * dr
+    dMeccy_r = dp.geom.integrate2(rho * eccy, dat, opts, pars) * Rc * dr
+    dMslr_r = dp.geom.integrate2(rho * slr, dat, opts, pars) * Rc * dr
+    dMa_r = dp.geom.integrate2(rho * a, dat, opts, pars) * Rc * dr
+    dMphip_r = dp.geom.integrate2(rho * phip, dat, opts, pars) * Rc * dr
+
+    dV_a = np.zeros(R.shape)
+    dM_a = np.zeros(R.shape)
+
+    np.add.at(dV_a, idxa, dV[gooda])
+    np.add.at(dM_a, idxa, (rho * dV)[gooda])
+    
+    dMe_a = np.zeros(R.shape)
+    np.add.at(dMe_a, idxa, (rho*e * dV)[gooda])
+    dMecc_a = np.zeros(R.shape)
+    np.add.at(dMecc_a, idxa, (rho*ecc * dV)[gooda])
+    dMeccx_a = np.zeros(R.shape)
+    np.add.at(dMeccx_a, idxa, (rho*eccx * dV)[gooda])
+    dMeccy_a = np.zeros(R.shape)
+    np.add.at(dMeccy_a, idxa, (rho*eccy * dV)[gooda])
+    dMslr_a = np.zeros(R.shape)
+    np.add.at(dMslr_a, idxa, (rho*slr * dV)[gooda])
+    dMa_a = np.zeros(R.shape)
+    np.add.at(dMa_a, idxa, (rho*a * dV)[gooda])
+    dMphip_a = np.zeros(R.shape)
+    np.add.at(dMphip_a, idxa, (rho*phip * dV)[gooda])
+
+    dV_p = np.zeros(R.shape)
+    dM_p = np.zeros(R.shape)
+
+    np.add.at(dV_p, idxp, dV[goodp])
+    np.add.at(dM_p, idxp, (rho * dV)[goodp])
+    
+    dMe_p = np.zeros(R.shape)
+    np.add.at(dMe_p, idxp, (rho*e * dV)[goodp])
+    dMecc_p = np.zeros(R.shape)
+    np.add.at(dMecc_p, idxp, (rho*ecc * dV)[goodp])
+    dMeccx_p = np.zeros(R.shape)
+    np.add.at(dMeccx_p, idxp, (rho*eccx * dV)[goodp])
+    dMeccy_p = np.zeros(R.shape)
+    np.add.at(dMeccy_p, idxp, (rho*eccy * dV)[goodp])
+    dMslr_p = np.zeros(R.shape)
+    np.add.at(dMslr_p, idxp, (rho*slr * dV)[goodp])
+    dMa_p = np.zeros(R.shape)
+    np.add.at(dMa_p, idxp, (rho*a * dV)[goodp])
+    dMphip_p = np.zeros(R.shape)
+    np.add.at(dMphip_p, idxp, (rho*phip * dV)[goodp])
+
+    print("    Done.")
+
+    print("Storing fluxes in", args.archive, "...")
 
     maxTries = 100
     tries = 0
@@ -371,14 +475,14 @@ def analyzeSingle(filepack, archiveName="diskFluxArchive.h5", Rmin=0.0,
 
     while tries < maxTries:
         try:
-            f = h5.File(archiveName, "r+")
+            f = h5.File(args.archive, "r+")
             break
         except OSError:
             tries += 1
             # print("File busy, attempt", tries, "of", maxTries)
             time.sleep(0.05)
     if f is None:
-        f = h5.File(archiveName, "r+")
+        f = h5.File(args.archive, "r+")
 
     f['t'][idx] = t
     f['Sig'][idx, :] = Sig
@@ -391,16 +495,286 @@ def analyzeSingle(filepack, archiveName="diskFluxArchive.h5", Rmin=0.0,
     f['T_grav'][idx, :] = TG
     f['Qheat_visc'][idx, :] = Qheat_Ave
     f['planets'][idx, :, :] = planetDat
+
+    f['orb/dM_e'][idx, :] = dMe_r
+    f['orb/dM_ecc'][idx, :] = dMecc_r
+    f['orb/dM_eccx'][idx, :] = dMeccx_r
+    f['orb/dM_eccy'][idx, :] = dMeccy_r
+    f['orb/dM_p'][idx, :] = dMslr_r
+    f['orb/dM_a'][idx, :] = dMa_r
+    f['orb/dM_phip'][idx, :] = dMphip_r
+
+    f['orb_a/dV'][idx, :] = dV_a
+    f['orb_a/dM'][idx, :] = dM_a
+    f['orb_a/dM_e'][idx, :] = dMe_a
+    f['orb_a/dM_ecc'][idx, :] = dMecc_a
+    f['orb_a/dM_eccx'][idx, :] = dMeccx_a
+    f['orb_a/dM_eccy'][idx, :] = dMeccy_a
+    f['orb_a/dM_p'][idx, :] = dMslr_a
+    f['orb_a/dM_a'][idx, :] = dMa_a
+    f['orb_a/dM_phip'][idx, :] = dMphip_a
+
+    f['orb_p/dV'][idx, :] = dV_p
+    f['orb_p/dM'][idx, :] = dM_p
+    f['orb_p/dM_e'][idx, :] = dMe_p
+    f['orb_p/dM_ecc'][idx, :] = dMecc_p
+    f['orb_p/dM_eccx'][idx, :] = dMeccx_p
+    f['orb_p/dM_eccy'][idx, :] = dMeccy_p
+    f['orb_p/dM_p'][idx, :] = dMslr_p
+    f['orb_p/dM_a'][idx, :] = dMa_p
+    f['orb_p/dM_phip'][idx, :] = dMphip_p
     f.close()
 
     print("    Done.")
     
     Mdot0 = 1.0  # 3*np.pi*nu
 
-    if makeFrames:
-        makeFramePlots(t, R, Sig, Pi, Vr, Om, Mdot, Jdot, FJ_adv, FJ_rey,
-                       FJ_visc, TG, Qheat_Ave, nu, Rmin, Rmax, Mdot0, name,
-                       plotDir, "png")
+    if args.makeFrames:
+        makeFramePlots(t, R, Sig, Pi, Vr, Om, Mdot, Jdot, ell, FJ_adv, FJ_rey,
+                       FJ_visc, TG, Qheat_Ave, nu, Mdot0, name,
+                       plotDir, args, "png")
+        makeOrbFrames(t, R, rjph, Sig, dMe_r, dMecc_r, dMeccx_r, dMeccy_r,
+                      dMslr_r, dMa_r, dMphip_r, dV_a, dM_a, dMe_a, dMecc_a,
+                      dMeccx_a, dMeccy_a, dMslr_a, dMa_a, dMphip_a, dV_p, dM_p,
+                      dMe_p, dMecc_p, dMeccx_p, dMeccy_p, dMslr_p, dMa_p,
+                      dMphip_p, name, plotDir, args, "png",
+                      r, phi, z, dV, rho, e, ecc, eccx, eccy, slr, a, phip,
+                      dat, opts, pars)
+
+def makeOrbFrames(t, R, rjph, Sig,
+                  dMe_r, dMecc_r, dMeccx_r, dMeccy_r, dMp_r, dMa_r, dMphip_r,
+                  dV_a, dM_a, dMe_a, dMecc_a, dMeccx_a, dMeccy_a, dMp_a, dMa_a,
+                  dMphip_a, dV_p, dM_p, dMe_p, dMecc_p, dMeccx_p, dMeccy_p,
+                  dMp_p, dMa_p, dMphip_p, name, plotDir, args, ext,
+                  r=None, phi=None, z=None, dV=None, rho=None, e=None,
+                  ecc=None, eccx=None, eccy=None, p=None, a=None, phip=None,
+                  dat=None, opts=None, pars=None):
+    
+    dr = rjph[1:]-rjph[:-1]
+    Rc = 0.5*(rjph[1:] + rjph[:-1])
+    dV_r = 2*np.pi*Rc * dr
+    dM_r = Sig * dV_r
+
+    n2 = 2*(len(R) // 2)
+    n4 = 4*(len(R) // 4)
+
+    ecc_r = dMecc_r / dM_r
+    phip_r = dMphip_r / dM_r
+    eccx_r = dMeccx_r / dM_r
+    eccy_r = dMeccy_r / dM_r
+
+    Sig_a = dM_a / dV_a
+    ecc_a = dMecc_a / dM_a
+    phip_a = dMphip_a / dM_a
+    eccx_a = dMeccx_a / dM_a
+    eccy_a = dMeccy_a / dM_a
+    
+    Sig_p = dM_p / dV_p
+    ecc_p = dMecc_p / dM_p
+    phip_p = dMphip_p / dM_p
+    eccx_p = dMeccx_p / dM_p
+    eccy_p = dMeccy_p / dM_p
+
+    Sig2_r = (dM_r[:n2:2] + dM_r[1:n2:2]) / (dV_r[:n2:2] + dV_r[1:n2:2])
+    Sig4_r = (dM_r[:n4:4] + dM_r[1:n4:4] + dM_r[2:n4:4] + dM_r[3:n4:4]
+              ) / (dV_r[:n4:4] + dV_r[1:n4:4] + dV_r[2:n4:4] + dV_r[3:n4:4])
+
+    Sig2_a = (dM_a[:n2:2] + dM_a[1:n2:2]) / (dV_a[:n2:2] + dV_a[1:n2:2])
+    Sig4_a = (dM_a[:n4:4] + dM_a[1:n4:4] + dM_a[2:n4:4] + dM_a[3:n4:4]
+              ) / (dV_a[:n4:4] + dV_a[1:n4:4] + dV_a[2:n4:4] + dV_a[3:n4:4])
+
+    Sig2_p = (dM_p[:n2:2] + dM_p[1:n2:2]) / (dV_p[:n2:2] + dV_p[1:n2:2])
+    Sig4_p = (dM_p[:n4:4] + dM_p[1:n4:4] + dM_p[2:n4:4] + dM_p[3:n4:4]
+              ) / (dV_p[:n4:4] + dV_p[1:n4:4] + dV_p[2:n4:4] + dV_p[3:n4:4])
+
+    R2 = 0.5*(R[:n2:2] + R[1:n2:2])
+    R4 = 0.25*(R[:n4:4] + R[1:n4:4] + R[2:n4:4] + R[3:n4:4])
+
+    goodR = (R >= args.Rmin) & (R <= args.Rmax)
+    goodR2 = (R2 >= args.Rmin) & (R2 <= args.Rmax)
+    goodR4 = (R4 >= args.Rmin) & (R4 <= args.Rmax)
+
+    fig, ax = plt.subplots(3, 5, figsize=(16, 10))
+    ax[0, 0].plot(R[goodR], Sig[goodR])
+    ax[0, 0].plot(R2[goodR2], Sig2_r[goodR2])
+    ax[0, 0].plot(R4[goodR4], Sig4_r[goodR4])
+    ax[1, 0].plot(R[goodR], Sig_a[goodR])
+    ax[1, 0].plot(R2[goodR2], Sig2_a[goodR2])
+    ax[1, 0].plot(R4[goodR4], Sig4_a[goodR4])
+    ax[2, 0].plot(R[goodR], Sig_p[goodR])
+    ax[2, 0].plot(R2[goodR2], Sig2_p[goodR2])
+    ax[2, 0].plot(R4[goodR4], Sig4_p[goodR4])
+    ax[0, 1].plot(R[goodR], ecc_r[goodR])
+    ax[0, 1].plot(R[goodR], np.sqrt(eccx_r**2 + eccy_r**2)[goodR])
+    ax[1, 1].plot(R[goodR], ecc_a[goodR])
+    ax[1, 1].plot(R[goodR], np.sqrt(eccx_a**2 + eccy_a**2)[goodR])
+    ax[2, 1].plot(R[goodR], ecc_p[goodR])
+    ax[2, 1].plot(R[goodR], np.sqrt(eccx_p**2 + eccy_p**2)[goodR])
+    ax[0, 2].plot(R[goodR], phip_r[goodR])
+    ax[0, 2].plot(R[goodR], np.arctan2(eccy_r, eccx_r)[goodR])
+    ax[1, 2].plot(R[goodR], phip_a[goodR])
+    ax[1, 2].plot(R[goodR], np.arctan2(eccy_a, eccx_a)[goodR])
+    ax[2, 2].plot(R[goodR], phip_p[goodR])
+    ax[2, 2].plot(R[goodR], np.arctan2(eccy_p, eccx_p)[goodR])
+    ax[0, 3].plot(R[goodR], (ecc_r * np.cos(phip_r))[goodR])
+    ax[0, 3].plot(R[goodR], eccx_r[goodR])
+    ax[1, 3].plot(R[goodR], (ecc_a * np.cos(phip_a))[goodR])
+    ax[1, 3].plot(R[goodR], eccx_a[goodR])
+    ax[2, 3].plot(R[goodR], (ecc_p * np.cos(phip_p))[goodR])
+    ax[2, 3].plot(R[goodR], eccx_p[goodR])
+    ax[0, 4].plot(R[goodR], (ecc_r * np.sin(phip_r))[goodR])
+    ax[0, 4].plot(R[goodR], eccy_r[goodR])
+    ax[1, 4].plot(R[goodR], (ecc_a * np.sin(phip_a))[goodR])
+    ax[1, 4].plot(R[goodR], eccy_a[goodR])
+    ax[2, 4].plot(R[goodR], (ecc_p * np.sin(phip_p))[goodR])
+    ax[2, 4].plot(R[goodR], eccy_p[goodR])
+
+
+    figname = plotDir / "sig_grid_{0:s}.{1:s}".format(name, ext)
+    print("Saving", figname)
+    fig.savefig(figname, dpi=200)
+    plt.close(fig)
+   
+    if r is not None:
+
+        mapRmax = 5
+
+        rs = np.arange(2.0, 20.0, 0.2)
+        phi_orb = np.linspace(0.0, 2*np.pi, 300)
+        cosp = np.cos(phi_orb)
+        sinp = np.sin(phi_orb)
+
+        figR, axR = plt.subplots(1, 1, figsize=(8, 6))
+        figA, axA = plt.subplots(1, 1, figsize=(8, 6))
+        figP, axP = plt.subplots(1, 1, figsize=(8, 6))
+        dp.plot.plotZSlice(figR, axR, dat[0], dat[3], r, rho, z, r"$\Sigma$",
+                           pars, opts, log=True, rmax=mapRmax)
+        dp.plot.plotZSlice(figA, axA, dat[0], dat[3], r, rho, z, r"$\Sigma$",
+                           pars, opts, log=True, rmax=mapRmax)
+        dp.plot.plotZSlice(figP, axP, dat[0], dat[3], r, rho, z, r"$\Sigma$",
+                           pars, opts, log=True, rmax=mapRmax)
+
+        for rr in rs:
+            i = np.searchsorted(rjph, rr) - 1
+            # print(R[i], dr[i], dM_r[i], dM_a[i], dM_p[i])
+            p_orb = dMp_r[i] / dM_r[i]
+            ecc_orb = dMecc_r[i] / dM_r[i]
+            eccx_orb = dMeccx_r[i] / dM_r[i]
+            eccy_orb = dMeccy_r[i] / dM_r[i]
+            phip_orb = dMphip_r[i] / dM_r[i]
+            r_orb1 = p_orb / (1 + ecc_orb*np.cos(phi_orb-phip_orb))
+
+            ecc_orb2 = math.sqrt(eccx_orb**2 + eccy_orb**2)
+            phip_orb2 = math.atan2(eccy_orb, eccx_orb)
+            r_orb2 = p_orb / (1 + ecc_orb2*np.cos(phi_orb-phip_orb2))
+
+            # axR.plot(r_orb1 * cosp, r_orb1 * sinp, lw=1, color='w', ls='-')
+            axR.plot(r_orb2 * cosp, r_orb2 * sinp, lw=1, color='w', ls='--')
+            
+            p_orb = dMp_a[i] / dM_a[i]
+            ecc_orb = dMecc_a[i] / dM_a[i]
+            eccx_orb = dMeccx_a[i] / dM_a[i]
+            eccy_orb = dMeccy_a[i] / dM_a[i]
+            phip_orb = dMphip_a[i] / dM_a[i]
+            r_orb1 = p_orb / (1 + ecc_orb*np.cos(phi_orb-phip_orb))
+
+            ecc_orb2 = math.sqrt(eccx_orb**2 + eccy_orb**2)
+            phip_orb2 = math.atan2(eccy_orb, eccx_orb)
+            r_orb2 = p_orb / (1 + ecc_orb2*np.cos(phi_orb-phip_orb2))
+
+            # axA.plot(r_orb1 * cosp, r_orb1 * sinp, lw=1, color='w', ls='-')
+            axA.plot(r_orb2 * cosp, r_orb2 * sinp, lw=1, color='w', ls='--')
+            
+            p_orb = R[i]
+            ecc_orb = dMecc_p[i] / dM_p[i]
+            eccx_orb = dMeccx_p[i] / dM_p[i]
+            eccy_orb = dMeccy_p[i] / dM_p[i]
+            phip_orb = dMphip_p[i] / dM_p[i]
+            r_orb1 = p_orb / (1 + ecc_orb*np.cos(phi_orb-phip_orb))
+
+            ecc_orb2 = math.sqrt(eccx_orb**2 + eccy_orb**2)
+            phip_orb2 = math.atan2(eccy_orb, eccx_orb)
+            r_orb2 = p_orb / (1 + ecc_orb2*np.cos(phi_orb-phip_orb2))
+
+            # axP.plot(r_orb1 * cosp, r_orb1 * sinp, lw=1, color='w', ls='-')
+            axP.plot(r_orb2 * cosp, r_orb2 * sinp, lw=1, color='w', ls='--')
+
+        figname = plotDir / "sigOrb_r_{0:s}.{1:s}".format(name, ext)
+        print("Saving", figname)
+        figR.savefig(figname, dpi=200)
+        plt.close(figR)
+
+        figname = plotDir / "sigOrb_a_{0:s}.{1:s}".format(name, ext)
+        print("Saving", figname)
+        figA.savefig(figname, dpi=200)
+        plt.close(figA)
+
+        figname = plotDir / "sigOrb_p_{0:s}.{1:s}".format(name, ext)
+        print("Saving", figname)
+        figP.savefig(figname, dpi=200)
+        plt.close(figP)
+
+
+
+        cm = plt.cm.inferno
+        cm.set_under('k')
+        cm.set_bad('k')
+
+        eccb = np.linspace(0.0, 1.0, 101)
+        dM_dedr, _, _ = np.histogram2d(r, ecc, bins=(rjph, eccb),
+                                       weights=rho*dV, density=True)
+        dM_deda, _, _ = np.histogram2d(a, ecc, bins=(rjph, eccb),
+                                       weights=rho*dV,density=True)
+        dM_dedp, _, _ = np.histogram2d(p, ecc, bins=(rjph, eccb),
+                                       weights=rho*dV, density=True)
+
+        i1 = np.searchsorted(rjph, args.Rmin)
+        i2 = np.searchsorted(rjph, args.Rmax)
+        rb = rjph[i1:i2]
+
+        dM_dedr /= R[:, None]
+        dM_deda /= R[:, None]
+        dM_dedp /= R[:, None]
+
+        dM_dedr = dM_dedr[i1:i2-1, :]
+        dM_deda = dM_deda[i1:i2-1, :]
+        dM_dedp = dM_dedp[i1:i2-1, :]
+
+        fig, ax = plt.subplots(1, 1)
+        C = ax.pcolormesh(rb, eccb, dM_dedr.T,
+                          norm=mpl.colors.LogNorm(), cmap=cm)
+        ax.set(xlabel=r'$r$', xlim=(1.0, rjph[-1]),
+               ylabel=r'$e$')
+        fig.colorbar(C, extend='min')
+
+        figname = plotDir / "ecc_r_{0:s}.{1:s}".format(name, ext)
+        print("Saving", figname)
+        fig.savefig(figname, dpi=200)
+        plt.close(fig)
+
+        fig, ax = plt.subplots(1, 1)
+        C = ax.pcolormesh(rb, eccb, dM_deda.T,
+                          norm=mpl.colors.LogNorm(), cmap=cm)
+        ax.set(xlabel=r'$a$', xlim=(1.0, rjph[-1]),
+               ylabel=r'$e$')
+        fig.colorbar(C, extend='min')
+
+        figname = plotDir / "ecc_a_{0:s}.{1:s}".format(name, ext)
+        print("Saving", figname)
+        fig.savefig(figname, dpi=300)
+        plt.close(fig)
+
+        fig, ax = plt.subplots(1, 1)
+        C = ax.pcolormesh(rb, eccb, dM_dedp.T,
+                          norm=mpl.colors.LogNorm(), cmap=cm)
+        ax.set(xlabel=r'$p$', xlim=(1.0, rjph[-1]),
+               ylabel=r'$e$')
+        fig.colorbar(C, extend='min')
+
+        figname = plotDir / "ecc_p_{0:s}.{1:s}".format(name, ext)
+        print("Saving", figname)
+        fig.savefig(figname, dpi=300)
+        plt.close(fig)
 
     
 def getPackStats(f, axis=0):
@@ -416,8 +790,7 @@ def getPackStats(f, axis=0):
     return np.array((f_mean, f_sig, f_mean_err))
 
 
-def analyzeSingleArchive(archiveName, Rmin=0.0, Rmax=np.inf,
-                         makeFrames=False):
+def analyzeSingleArchive(archiveName, args):
 
     with h5.File(archiveName, "r") as f:
         t = f['t'][...]
@@ -440,7 +813,11 @@ def analyzeSingleArchive(archiveName, Rmin=0.0, Rmax=np.inf,
 
     Mdot0 = 1.0
 
+    T_grav = T_grav - T_grav[:, -1][:, None]
+
     Jdot = T_grav - FJ_adv - FJ_visc
+    ell = Jdot / Mdot
+
     l = R[None, :]**2 * Om
     FJ_acc = -Mdot*l
     FJ_rey = FJ_adv - FJ_acc
@@ -449,30 +826,35 @@ def analyzeSingleArchive(archiveName, Rmin=0.0, Rmax=np.inf,
     if not plotDir.exists():
         plotDir.mkdir()
 
-    if makeFrames:
+    if args.makeFrames:
         for i in range(nt):
             name = "{0:04d}".format(i)
             makeFramePlots(t[i], R, Sig[i], Pi[i], Vr[i], Om[i], Mdot[i],
-                           Jdot[i], FJ_adv[i], FJ_rey[i], FJ_visc[i],
+                           Jdot[i], ell[i], FJ_adv[i], FJ_rey[i], FJ_visc[i],
                            T_grav[i], Qheat_visc[i],
-                           nu, Rmin, Rmax, Mdot0, name, plotDir)
+                           nu, Mdot0, name, plotDir, args, 'png')
 
-    SigPack = getPackStats(Sig)
-    PiPack = getPackStats(Pi)
-    VrPack = getPackStats(Vr)
-    OmPack = getPackStats(Om)
-    MdotPack = getPackStats(Mdot)
-    JdotPack = getPackStats(Jdot)
-    FJ_advPack = getPackStats(FJ_adv)
-    FJ_reyPack = getPackStats(FJ_rey)
-    FJ_viscPack = getPackStats(FJ_visc)
-    T_gravPack = getPackStats(T_grav)
-    Qheat_viscPack = getPackStats(Qheat_visc)
+    mask = (tP >= args.Tmin) & (tP <= args.Tmax)
+
+    SigPack = getPackStats(Sig[mask])
+    PiPack = getPackStats(Pi[mask])
+    VrPack = getPackStats(Vr[mask])
+    OmPack = getPackStats(Om[mask])
+    MdotPack = getPackStats(Mdot[mask])
+    JdotPack = getPackStats(Jdot[mask])
+    # ellPack = getPackStats(ell[mask])
+    FJ_advPack = getPackStats(FJ_adv[mask])
+    FJ_reyPack = getPackStats(FJ_rey[mask])
+    FJ_viscPack = getPackStats(FJ_visc[mask])
+    T_gravPack = getPackStats(T_grav[mask])
+    Qheat_viscPack = getPackStats(Qheat_visc[mask])
+
+    ell = JdotPack[0] / MdotPack[0]
 
     makeFramePlots(t[-1]-t[0], R, SigPack, PiPack, VrPack, OmPack, MdotPack,
-                   JdotPack, FJ_advPack, FJ_reyPack, FJ_viscPack, T_gravPack,
-                   Qheat_viscPack, nu, Rmin, Rmax, Mdot0, "tAvg", plotDir,
-                   "pdf", 0.4)
+                   JdotPack, ell, FJ_advPack, FJ_reyPack, FJ_viscPack,
+                   T_gravPack, Qheat_viscPack,
+                   nu, Mdot0, "tAvg", plotDir, args, "pdf", 0.4)
 
     dMdr = 2*np.pi * R[None, :] * Sig
     Mr = integrate_over_r(dMdr, rjph=rjph, axis=1)
@@ -487,9 +869,9 @@ def analyzeSingleArchive(archiveName, Rmin=0.0, Rmax=np.inf,
     ax[0].plot(tP[sortInds], Mtot[sortInds])
     ax[1].plot(tP[sortInds], Jtot[sortInds])
 
-    ax[0].set(xlabel=r'$t$ ($T_{\mathrm{bin}}^{-1}$)',
+    ax[0].set(xlabel=r'$t$ ($T_{\mathrm{bin}}$)',
               ylabel=r'$M_{\mathrm{tot}}$')
-    ax[1].set(xlabel=r'$t$ ($T_{\mathrm{bin}}^{-1}$)',
+    ax[1].set(xlabel=r'$t$ ($T_{\mathrm{bin}}$)',
               ylabel=r'$J_{\mathrm{tot}}$')
 
     figname = plotDir / "cons_timeSeries.pdf"
@@ -497,9 +879,214 @@ def analyzeSingleArchive(archiveName, Rmin=0.0, Rmax=np.inf,
     fig.savefig(figname)
     plt.close(fig)
 
+    iR1 = np.searchsorted(R, 4.0)
+    iR2 = np.searchsorted(R, 5.0)
+    iR3 = np.searchsorted(R, 6.0)
+    iR4 = np.searchsorted(R, 7.0)
+    iR5 = np.searchsorted(R, 8.0)
 
-def analyzeCheckpoints(filenames, archiveName='diskFluxArchive.h5',
-                       ncpu=None, Rmin=0.0, Rmax=np.inf, makeFrames=False):
+    kwargs1 = {'ls': '-', 'lw': 1, 'color': 'C0',
+               'label': r'$R = {0:.1f}$ a'.format(R[iR1])}
+    kwargs2 = {'ls': '-', 'lw': 1, 'color': 'C1',
+               'label': r'$R = {0:.1f}$ a'.format(R[iR2])}
+    kwargs3 = {'ls': '-', 'lw': 1, 'color': 'C2',
+               'label': r'$R = {0:.1f}$ a'.format(R[iR3])}
+    kwargs4 = {'ls': '-', 'lw': 1, 'color': 'C3',
+               'label': r'$R = {0:.1f}$ a'.format(R[iR4])}
+    kwargs5 = {'ls': '-', 'lw': 1, 'color': 'C5',
+               'label': r'$R = {0:.1f}$ a'.format(R[iR5])}
+
+    fig, ax = plt.subplots(2, 2, figsize=(12, 10))
+    ax[0, 0].plot(tP[sortInds], Sig[sortInds, iR1], **kwargs1)
+    ax[0, 0].plot(tP[sortInds], Sig[sortInds, iR2], **kwargs2)
+    ax[0, 0].plot(tP[sortInds], Sig[sortInds, iR3], **kwargs3)
+    ax[0, 0].plot(tP[sortInds], Sig[sortInds, iR4], **kwargs4)
+    ax[0, 0].plot(tP[sortInds], Sig[sortInds, iR5], **kwargs5)
+    ax[0, 1].plot(tP[sortInds], Mdot[sortInds, iR1], **kwargs1)
+    ax[0, 1].plot(tP[sortInds], Mdot[sortInds, iR2], **kwargs2)
+    ax[0, 1].plot(tP[sortInds], Mdot[sortInds, iR3], **kwargs3)
+    ax[0, 1].plot(tP[sortInds], Mdot[sortInds, iR4], **kwargs4)
+    ax[0, 1].plot(tP[sortInds], Mdot[sortInds, iR5], **kwargs5)
+    ax[1, 0].plot(tP[sortInds], Jdot[sortInds, iR1], **kwargs1)
+    ax[1, 0].plot(tP[sortInds], Jdot[sortInds, iR2], **kwargs2)
+    ax[1, 0].plot(tP[sortInds], Jdot[sortInds, iR3], **kwargs3)
+    ax[1, 0].plot(tP[sortInds], Jdot[sortInds, iR4], **kwargs4)
+    ax[1, 0].plot(tP[sortInds], Jdot[sortInds, iR5], **kwargs5)
+    ax[1, 1].plot(tP[sortInds], (Jdot/Mdot)[sortInds, iR1], **kwargs1)
+    ax[1, 1].plot(tP[sortInds], (Jdot/Mdot)[sortInds, iR2], **kwargs2)
+    ax[1, 1].plot(tP[sortInds], (Jdot/Mdot)[sortInds, iR3], **kwargs3)
+    ax[1, 1].plot(tP[sortInds], (Jdot/Mdot)[sortInds, iR4], **kwargs4)
+    ax[1, 1].plot(tP[sortInds], (Jdot/Mdot)[sortInds, iR5], **kwargs5)
+
+    ax[0, 0].legend()
+    ax[0, 0].set(xlabel=r'$t$ ($T_{\mathrm{bin}}$)',
+                 ylabel=r'$\Sigma(R)$')
+    ax[0, 1].set(xlabel=r'$t$ ($T_{\mathrm{bin}}$)',
+                 ylabel=r'$\dot{M}(R)$')
+    ax[1, 0].set(xlabel=r'$t$ ($T_{\mathrm{bin}}$)',
+                 ylabel=r'$\dot{J}(R)$')
+    ax[1, 1].set(xlabel=r'$t$ ($T_{\mathrm{bin}}$)',
+                 ylabel=r'$\ell(R)$', ylim=(-2, 2))
+
+    figname = plotDir / "flux_timeSeries.pdf"
+    print("Saving", figname)
+    fig.savefig(figname)
+    plt.close(fig)
+
+    dt = (t[-1] - t[0]) / (nt - 1)
+
+    nw = max(1, int(2*np.pi*args.window / dt))
+
+    Mdot_window = scipy.signal.convolve2d(Mdot, np.ones((nw, 1))/nw,
+                                          mode='valid')
+    Jdot_window = scipy.signal.convolve2d(Jdot, np.ones((nw, 1))/nw,
+                                          mode='valid')
+    ell_window = Jdot_window/Mdot_window
+
+    di = max(1, int(2*np.pi*args.interval / dt))
+
+    goodR = (R >= args.Rmin) & (R <= args.Rmax)
+
+    fig, ax = plt.subplots(2, 2, figsize=(12, 10))
+    ax[0, 0].plot(R[goodR], Mdot_window[-1, goodR])
+    ax[0, 0].plot(R[goodR], Mdot_window[-di-1, goodR])
+    ax[0, 0].plot(R[goodR], Mdot_window[-2*di-1, goodR])
+    ax[0, 0].plot(R[goodR], Mdot_window[-3*di-1, goodR])
+    ax[0, 0].plot(R[goodR], Mdot_window[-4*di-1, goodR])
+    
+    ax[0, 1].plot(R[goodR], Jdot_window[-1, goodR])
+    ax[0, 1].plot(R[goodR], Jdot_window[-di-1, goodR])
+    ax[0, 1].plot(R[goodR], Jdot_window[-2*di-1, goodR])
+    ax[0, 1].plot(R[goodR], Jdot_window[-3*di-1, goodR])
+    ax[0, 1].plot(R[goodR], Jdot_window[-4*di-1, goodR])
+    
+    ax[1, 0].plot(R[goodR], ell_window[-1, goodR])
+    ax[1, 0].plot(R[goodR], ell_window[-di-1, goodR])
+    ax[1, 0].plot(R[goodR], ell_window[-2*di-1, goodR])
+    ax[1, 0].plot(R[goodR], ell_window[-3*di-1, goodR])
+    ax[1, 0].plot(R[goodR], ell_window[-4*di-1, goodR])
+    
+    ax[1, 0].set(ylim=(-2, 2))
+
+    figname = plotDir / "Jdot_r_timeWindow.pdf"
+    print("Saving", figname)
+    fig.savefig(figname)
+    plt.close(fig)
+
+    iR1 = np.searchsorted(R, 4.0)
+    iR2 = np.searchsorted(R, 5.0)
+    iR3 = np.searchsorted(R, 6.0)
+    iR4 = np.searchsorted(R, 7.0)
+    iR5 = np.searchsorted(R, 8.0)
+
+    ntw = Mdot_window.shape[0]
+
+    fig, ax = plt.subplots(2, 2, figsize=(12, 10))
+    ax[0, 0].plot(tP[-ntw:], Mdot_window[:, iR1])
+    ax[0, 0].plot(tP[-ntw:], Mdot_window[:, iR2])
+    ax[0, 0].plot(tP[-ntw:], Mdot_window[:, iR3])
+    ax[0, 0].plot(tP[-ntw:], Mdot_window[:, iR4])
+    ax[0, 0].plot(tP[-ntw:], Mdot_window[:, iR5])
+
+    ax[0, 1].plot(tP[-ntw:], Jdot_window[:, iR1])
+    ax[0, 1].plot(tP[-ntw:], Jdot_window[:, iR2])
+    ax[0, 1].plot(tP[-ntw:], Jdot_window[:, iR3])
+    ax[0, 1].plot(tP[-ntw:], Jdot_window[:, iR4])
+    ax[0, 1].plot(tP[-ntw:], Jdot_window[:, iR5])
+
+    ax[1, 0].plot(tP[-ntw:], ell_window[:, iR1])
+    ax[1, 0].plot(tP[-ntw:], ell_window[:, iR2])
+    ax[1, 0].plot(tP[-ntw:], ell_window[:, iR3])
+    ax[1, 0].plot(tP[-ntw:], ell_window[:, iR4])
+    ax[1, 0].plot(tP[-ntw:], ell_window[:, iR5])
+
+    ax[1, 0].set(ylim=(-2, 2))
+    
+
+    figname = plotDir / "Jdot_t_timeWindow.pdf"
+    print("Saving", figname)
+    fig.savefig(figname)
+    plt.close(fig)
+
+    
+
+def analyzeSingleArchiveOrb(archiveName, args):
+
+    with h5.File(archiveName, "r") as f:
+        t = f['t'][...]
+        R = f['R'][...]
+        rjph = f['rjph'][...]
+        Sig_r = f['Sig'][...]
+        dMecc_r = f['orb/dMecc'][...]
+        dV_a = f['orb_a/dV'][...]
+        dM_a = f['orb_a/dM'][...]
+        dMecc_a = f['orb_a/dMecc'][...]
+        dV_p = f['orb_p/dV'][...]
+        dM_p = f['orb_p/dM'][...]
+        dMecc_p = f['orb_p/dMecc'][...]
+
+    nt = len(t)
+    tP = t / (2*np.pi)
+
+    dr = rjph[1:]-rjph[:-1]
+    Rc = 0.5*(rjph[1:] + rjph[:-1])
+    dV_r = 2*np.pi*Rc * rjph
+    dM_r = sig_r * dV_r
+
+    Sig2_r = (dM_r[::2] + dM_r[1::2]) / (dV_r[::2] + dV_r[1::2])
+    Sig4_r = (dM_r[::4] + dM_r[1::4] + dM_r[2::4] + dM_r[3::4]
+            ) / (dV_r[::4] + dV[1::4] + dV[2::4] + dV[3::4])
+    ecc2_r = (dMecc_r[::2] + dMecc_r[1::2]) / (dV_r[::2] + dV[1::2])
+    ecc4_r = (dM_r[::4] + dM_r[1::4] + dM_r[2::4] + dM_r[3::4]
+            ) / (dV_r[::4] + dV[1::4] + dV[2::4] + dV[3::4])
+
+    Sig_a = dM_a / dV_a
+    Sig2_a = (dM_a[::2] + dM_a[1::2]) / (dV_a[::2] + dV[1::2])
+    Sig4_a = (dM_a[::4] + dM_a[1::4] + dM_a[2::4] + dM_a[3::4]
+            ) / (dV_a[::4] + dV[1::4] + dV[2::4] + dV[3::4])
+
+    Sig_p = dM_p / dV_p
+    Sig2_p = (dM_p[::2] + dM_p[1::2]) / (dV_p[::2] + dV[1::2])
+    Sig4_p = (dM_p[::4] + dM_p[1::4] + dM_p[2::4] + dM_p[3::4]
+            ) / (dV_p[::4] + dV[1::4] + dV[2::4] + dV[3::4])
+
+    R2 = 0.5*(R[::2] + R[1::2])
+    R4 = 0.25*(R[::4] + R[1::4] + R[2::4] + R[3::4])
+
+    goodR = (R >= args.Rmin) & (R <= args.Rmax)
+    goodR2 = (R2 >= args.Rmin) & (R2 <= args.Rmax)
+    goodR4 = (R4 >= args.Rmin) & (R4 <= args.Rmax)
+
+    fig, ax = plt.subplots(3, 3, figsize=(14, 12))
+    ax[0, 0].plot(R, Sig_r)
+    ax[0, 0].plot(R2, Sig2_r)
+    ax[0, 0].plot(R4, Sig4_r)
+    ax[0, 1].plot(R, Sig_a)
+    ax[0, 1].plot(R2, Sig2_a)
+    ax[0, 1].plot(R4, Sig4_a)
+    ax[0, 2].plot(R, Sig_p)
+    ax[0, 2].plot(R2, Sig2_p)
+    ax[0, 2].plot(R4, Sig4_p)
+    ax[1, 0].plot(R, ecc_r)
+    ax[1, 0].plot(R2, ecc2_r)
+    ax[1, 0].plot(R4, ecc4_r)
+    ax[1, 1].plot(R, ecc_a)
+    ax[1, 1].plot(R2, ecc2_a)
+    ax[1, 1].plot(R4, ecc4_a)
+    ax[1, 2].plot(R, ecc_p)
+    ax[1, 2].plot(R2, ecc2_p)
+    ax[1, 2].plot(R4, ecc4_p)
+    ax[2, 0].plot(R, phip_r)
+    ax[2, 0].plot(R2, phip2_r)
+    ax[2, 0].plot(R4, phip4_r)
+    ax[2, 1].plot(R, phip_a)
+    ax[2, 1].plot(R2, phip2_a)
+    ax[2, 1].plot(R4, phip4_a)
+    ax[2, 2].plot(R, phip_p)
+    ax[2, 2].plot(R2, phip2_p)
+    ax[2, 2].plot(R4, phip4_p)
+
+def analyzeCheckpoints(filenames, args):
 
     nt = len(filenames)
     pars = dp.util.loadPars(filenames[0])
@@ -511,9 +1098,9 @@ def analyzeCheckpoints(filenames, archiveName='diskFluxArchive.h5',
 
     nr = len(rjph)-1
 
-    print("Initializing archive HDF5 file:", archiveName)
+    print("Initializing archive HDF5 file:", args.archive)
 
-    with h5.File(archiveName, "w") as f:
+    with h5.File(args.archive, "w") as f:
         f.create_dataset("t", (nt, ), dtype=float)
         f.create_dataset("rjph", data=rjph)
         f.create_dataset("R", data=R)
@@ -528,30 +1115,57 @@ def analyzeCheckpoints(filenames, archiveName='diskFluxArchive.h5',
         f.create_dataset("Qheat_visc", (nt, nr), dtype=float)
         f.create_dataset("planets", (nt,)+planetDat.shape, dtype=float)
 
+        f.create_group("orb")
+        f.create_dataset("orb/dM_e", (nt, nr), dtype=float)
+        f.create_dataset("orb/dM_ecc", (nt, nr), dtype=float)
+        f.create_dataset("orb/dM_eccx", (nt, nr), dtype=float)
+        f.create_dataset("orb/dM_eccy", (nt, nr), dtype=float)
+        f.create_dataset("orb/dM_p", (nt, nr), dtype=float)
+        f.create_dataset("orb/dM_a", (nt, nr), dtype=float)
+        f.create_dataset("orb/dM_phip", (nt, nr), dtype=float)
+        f.create_group("orb_a")
+        f.create_dataset("orb_a/dV", (nt, nr), dtype=float)
+        f.create_dataset("orb_a/dM", (nt, nr), dtype=float)
+        f.create_dataset("orb_a/dM_e", (nt, nr), dtype=float)
+        f.create_dataset("orb_a/dM_ecc", (nt, nr), dtype=float)
+        f.create_dataset("orb_a/dM_eccx", (nt, nr), dtype=float)
+        f.create_dataset("orb_a/dM_eccy", (nt, nr), dtype=float)
+        f.create_dataset("orb_a/dM_p", (nt, nr), dtype=float)
+        f.create_dataset("orb_a/dM_a", (nt, nr), dtype=float)
+        f.create_dataset("orb_a/dM_phip", (nt, nr), dtype=float)
+        f.create_group("orb_p")
+        f.create_dataset("orb_p/dV", (nt, nr), dtype=float)
+        f.create_dataset("orb_p/dM", (nt, nr), dtype=float)
+        f.create_dataset("orb_p/dM_e", (nt, nr), dtype=float)
+        f.create_dataset("orb_p/dM_ecc", (nt, nr), dtype=float)
+        f.create_dataset("orb_p/dM_eccx", (nt, nr), dtype=float)
+        f.create_dataset("orb_p/dM_eccy", (nt, nr), dtype=float)
+        f.create_dataset("orb_p/dM_p", (nt, nr), dtype=float)
+        f.create_dataset("orb_p/dM_a", (nt, nr), dtype=float)
+        f.create_dataset("orb_p/dM_phip", (nt, nr), dtype=float)
+
         f.create_group("Pars")
         for key in pars:
             f['Pars'].create_dataset(key, data=pars[key])
 
-    if ncpu is None or ncpu <= 1:
+    if args.ncpu is None or args.ncpu <= 1:
         for i, fname in enumerate(filenames):
-            analyzeSingle((i, fname), archiveName, Rmin, Rmax, makeFrames)
+            analyzeSingle((i, fname), args)
     else:
-        map_fn = functools.partial(analyzeSingle, archiveName=archiveName,
-                                   Rmin=Rmin, Rmax=Rmax, makeFrames=makeFrames)
+        map_fn = functools.partial(analyzeSingle, args=args)
         with Pool(ncpu) as p:
             p.map(map_fn, enumerate(filenames))
 
-    return archiveName
+    return args.archive
 
 
-def analyzeArchives(filenames, Rmin, Rmax, makeFrames):
+def analyzeArchives(filenames, args):
 
     for filename in filenames:
-        analyzeSingleArchive(filename, Rmin, Rmax, makeFrames)
+        analyzeSingleArchive(filename, args)
 
 
-def analyze(filenames, archiveName='diskFluxArchive.h5', ncpu=1,
-            Rmin=0.0, Rmax=np.inf, makeFrames=False):
+def analyze(filenames, args):
 
     checkpoints = False
     archives = False
@@ -563,12 +1177,12 @@ def analyze(filenames, archiveName='diskFluxArchive.h5', ncpu=1,
             archives = True
 
     if checkpoints:
-        analyzeCheckpoints(filenames, archiveName, ncpu, Rmin, Rmax,
-                           makeFrames)
-        analyzeSingleArchive(archiveName, Rmin, Rmax, False)
+        analyzeCheckpoints(filenames, args)
+        args.makeFrames = False
+        analyzeSingleArchive(args.archive, args)
 
     elif archives:
-        analyzeArchives(filenames, Rmin, Rmax, makeFrames)
+        analyzeArchives(filenames, args)
 
 
 if __name__ == "__main__":
@@ -578,11 +1192,14 @@ if __name__ == "__main__":
     parser.add_argument('--ncpu', nargs='?', default=1, type=int)
     parser.add_argument('--Rmin', nargs='?', default=0.0, type=np.float)
     parser.add_argument('--Rmax', nargs='?', default=np.inf, type=np.float)
+    parser.add_argument('--Tmin', nargs='?', default=0, type=np.float)
+    parser.add_argument('--Tmax', nargs='?', default=np.inf, type=np.float)
+    parser.add_argument('--window', nargs='?', default=10, type=np.float)
+    parser.add_argument('--interval', nargs='?', default=100, type=np.float)
     parser.add_argument('--makeFrames', action='store_true')
-    parser.add_argument('--archive', nargs=1, default='diskFluxArchive.h5')
+    parser.add_argument('--archive', nargs='?', default='diskFluxArchive.h5')
 
     args = parser.parse_args()
 
     filenames = [Path(x) for x in args.files]
-    analyze(filenames, args.archive, args.ncpu, args.Rmin, args.Rmax,
-            args.makeFrames)
+    analyze(filenames, args) 
