@@ -1153,7 +1153,7 @@ def analyzeCheckpoints(filenames, args):
             analyzeSingle((i, fname), args)
     else:
         map_fn = functools.partial(analyzeSingle, args=args)
-        with Pool(ncpu) as p:
+        with Pool(args.ncpu) as p:
             p.map(map_fn, enumerate(filenames))
 
     return args.archive
