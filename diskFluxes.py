@@ -481,6 +481,73 @@ def analyzeSingle(filepack, args):
 
     print("    Done.")
 
+
+    print("Calculating D20 wave things...")
+
+    sig_mean = np.empty(r.shape)
+    vr_mean = np.empty(r.shape)
+    ell_mean = np.empty(r.shape)
+
+    Rs = np.sort(R)
+    for i in range(rjph.shape[0]-1):
+        ind = (r > rjph[i]) & (r < rjph[i+1])
+        sig_mean[ind] = Sig[i]
+        vr_mean[ind] = Vr_ave[i]
+        ell_mean[ind] = Rs[i]**2 * Om_ave[i]
+
+    om_mean = ell_mean / (r*r)
+    ell_ave = Rs*Rs * Om_ave
+
+    sig_wave = rho - sig_mean
+    vr_wave = vr - vr_mean
+    ell_wave = r*r*vp - ell_mean
+
+
+    delldr = np.zeros(Rs.shape)
+    delldr[1:-1] = (ell_ave[2:] - ell_ave[:-2]) / (Rs[2:] - Rs[:-2])
+
+    Spp = -2*rho*nu*s_pp  # Viscous ^phi_phi strain
+    pack = np.stack((P, Spp), axis=-1)
+    dpackdp = dp.geom.calculateGradX2(phi, pack, dat, pars)
+    dPdphi = pack[:, 0]
+    dSppdphi = pack[:, 1]
+
+    pack = np.stack((ell_wave, fJ_visc), axis=-1)
+    dpackdr = dp.geom.calculateGradX1(r, phi, pack, dat, opts, pars)
+    delldr_wave = dpackdr[:, 0]
+    dSrpdr = dpackdr[:, 1]
+
+    
+    j_wave = dp.geom.integrate2(sig_wave * ell_wave,
+                                dat, opts, pars) / (2*np.pi)
+    vr_ell_wave = dp.geom.integrate2(vr_wave * ell_wave,
+                                     dat, opts, pars) / (2*np.pi)
+    vr_delldr_wave = dp.geom.integrate2(vr_wave * delldr_wave,
+                                        dat, opts, pars) / (2*np.pi)
+    sig_vr_wave = dp.geom.integrate2(sig_wave * vr_wave,
+                                     dat, opts, pars) / (2*np.pi)
+    sig_ell_wave = dp.geom.integrate2(sig_wave * ell_wave,
+                                      dat, opts, pars) / (2*np.pi)
+    sig_vr_ell_wave = dp.geom.integrate2(sig_wave * vr_wave * ell_wave,
+                                         dat, opts, pars) / (2*np.pi)
+    F_wave = dp.geom.integrate2(rho * vr * ell_wave,
+                                dat, opts, pars) / (2*np.pi)
+    sig_visc_pp_wave = dp.geom.integrate2(sig_wave / rho * dSppdphi,
+                                          dat, opts, pars) / (2*np.pi)
+    sig_visc_rp_wave = dp.geom.integrate2(sig_wave / (r*rho) * dSrpdr,
+                                          dat, opts, pars) / (2*np.pi)
+    sig_dPidp_wave = dp.geom.integrate2(sig_wave / rho * dPdphi,
+                                        dat, opts, pars) / (2*np.pi)
+    sig_Om_delldp_wave = dp.geom.integrate2(sig_wave * vp * r*r * dp_vp,
+                                            dat, opts, pars) / (2*np.pi)
+    t_ex = dp.geom.integrate2(r * sig_wave * gp, dat, opts, pars)
+
+    t_dep = 2*np.pi*Rs * (sig_vr_wave * delldr - Sig * vr_delldr_wave
+                          - sig_Om_delldp_wave - sig_dPidp_wave
+                          - sig_visc_pp_wave - sig_visc_rp_wave)
+    print("    Done.")
+
+
     print("Storing fluxes in", args.archive, "...")
 
     maxTries = 100
@@ -537,6 +604,23 @@ def analyzeSingle(filepack, args):
     f['orb_p/dM_p'][idx, :] = dMslr_p
     f['orb_p/dM_a'][idx, :] = dMa_p
     f['orb_p/dM_phip'][idx, :] = dMphip_p
+
+    f['D20/vr'][idx, :] = Vr_ave
+    f['D20/ell'][idx, :] = ell_ave
+    f['D20/j_wave'][idx, :] = j_wave
+    f['D20/vr_ell_wave'][idx, :] = vr_ell_wave
+    f['D20/vr_delldr_wave'][idx, :] = vr_delldr_wave
+    f['D20/sig_vr_wave'][idx, :] = sig_vr_wave
+    f['D20/sig_ell_wave'][idx, :] = sig_ell_wave
+    f['D20/sig_vr_ell_wave'][idx, :] = sig_vr_ell_wave
+    f['D20/sig_dPidp_wave'][idx, :] = sig_dPidp_wave
+    f['D20/sig_Om_delldp_wave'][idx, :] = sig_Om_delldp_wave
+    f['D20/sig_visc_pp_wave'][idx, :] = sig_visc_pp_wave
+    f['D20/sig_visc_rp_wave'][idx, :] = sig_visc_rp_wave
+    f['D20/F_wave'][idx, :] = F_wave
+    f['D20/t_ex'][idx, :] = t_ex
+    f['D20/t_dep'][idx, :] = t_dep
+
     f.close()
 
     print("    Done.")
@@ -554,6 +638,12 @@ def analyzeSingle(filepack, args):
                       dMphip_p, name, plotDir, args, "png",
                       r, phi, z, dV, rho, e, ecc, eccx, eccy, slr, a, phip,
                       dat, opts, pars)
+        makeD20Frames(t, Rs, rjph, Sig, Vr_ave, ell_ave, Mdot, j_wave,
+                      vr_ell_wave, vr_delldr_wave, sig_vr_wave, sig_ell_wave,
+                      sig_vr_ell_wave, sig_dPidp_wave, sig_Om_delldp_wave,
+                      sig_visc_pp_wave, sig_visc_rp_wave, F_wave, t_ex,
+                      t_dep, name, plotDir, args, "png")
+
 
 def makeOrbFrames(t, R, rjph, Sig,
                   dMe_r, dMecc_r, dMeccx_r, dMeccy_r, dMp_r, dMa_r, dMphip_r,
@@ -790,6 +880,61 @@ def makeOrbFrames(t, R, rjph, Sig,
         fig.savefig(figname, dpi=300)
         plt.close(fig)
 
+
+def makeD20Frames(t, R, rjph, sig, vr, ell, Mdot, j_wave,
+                  vr_ell_wave, vr_delldr_wave, sig_vr_wave, sig_ell_wave,
+                  sig_vr_ell_wave, sig_dPidp_wave, sig_Om_delldp_wave,
+                  sig_visc_pp_wave, sig_visc_rp_wave, F_wave, t_ex,
+                  t_dep, name, plotDir, args, ext):
+
+    good = (R >= args.Rmin) & (R <= args.Rmax)
+
+    fig, ax = plt.subplots(2, 1, figsize=(6, 8))
+
+    ax[0].plot(R[good], (2*np.pi*R * sig*vr_ell_wave)[good],
+            label=r"$\langle \Sigma \rangle \langle {v^r}' {v_\phi}'\rangle$")
+    ax[0].plot(R[good], (2*np.pi*R * vr*sig_ell_wave)[good],
+            label=r"$\langle v^r \rangle \langle \Sigma' {v_\phi}'\rangle$")
+    ax[0].plot(R[good], (2*np.pi*R * sig_vr_ell_wave)[good],
+            label=r"$\langle \Sigma' {v^r}' {v_\phi}'\rangle$")
+    ax[0].plot(R[good], F_wave[good], label=r"$F_{\mathrm{wave}}$")
+
+    delldr = np.zeros(R.shape)
+    delldr[1:-1] = (ell[2:] - ell[:-2]) / (R[2:] - R[:-2])
+
+    ax[1].plot(R[good], (2*np.pi*R * sig_vr_wave * delldr)[good],
+        label=r"$\langle \Sigma'{v^r}'\rangle\partial_r\langle v_\phi\rangle$")
+    ax[1].plot(R[good], -(2*np.pi*R * sig * vr_delldr_wave)[good],
+        label=r"$-\langle\Sigma\rangle\langle{v^r}'\partial_r v_\phi'\rangle$")
+    ax[1].plot(R[good], -(2*np.pi*R * sig_Om_delldp_wave)[good],
+        label=r"$-\langle \Sigma' v^\phi \partial_\phi v_\phi \rangle$")
+    ax[1].plot(R[good], -(2*np.pi*R * sig_dPidp_wave)[good],
+        label=r"$-\langle \Sigma'/\Sigma \partial_\phi \Pi \rangle$")
+    ax[1].plot(R[good], -(2*np.pi*R * sig_visc_pp_wave)[good],
+        label=r"$-\langle \Sigma'/\Sigma \partial_\phi S_\phi^\phi \rangle$")
+    ax[1].plot(R[good], -(2*np.pi*R * sig_visc_rp_wave)[good],
+        label=r"$-\langle \Sigma'/(r \Sigma) \partial_r r S_\phi^\phi \rangle$")
+    ax[1].plot(R[good], t_dep[good], color='k', lw=2, ls='-',
+        label=r"$t_{\mathrm{dep}}$")
+    ax[1].plot(R[good], t_ex[good], color='k', lw=2, ls='--',
+        label=r"$t_{\mathrm{ex}}$")
+
+    ax[0].set(xscale='linear', xlabel=r'$R (a)$',
+              yscale='linear', ylabel=r'$F_{\mathrm{wave}}$')
+    ax[1].set(xscale='linear', xlabel=r'$R (a)$',
+              yscale='linear', ylabel=r'$t_{\mathrm{wave}}$')
+
+
+    ax[0].legend()
+    ax[1].legend()
+        
+
+    figname = plotDir / "wave_r_{0:s}.{1:s}".format(name, ext)
+    print("Saving", figname)
+    fig.savefig(figname)
+    plt.close(fig)
+
+
     
 def getPackStats(f, axis=0):
 
@@ -1021,7 +1166,6 @@ def analyzeSingleArchive(archiveName, args):
     print("Saving", figname)
     fig.savefig(figname)
     plt.close(fig)
-
 
     
 
@@ -1349,6 +1493,23 @@ def analyzeCheckpoints(filenames, args):
         f.create_dataset("orb_p/dM_p", (nt, nr), dtype=float)
         f.create_dataset("orb_p/dM_a", (nt, nr), dtype=float)
         f.create_dataset("orb_p/dM_phip", (nt, nr), dtype=float)
+        
+        f.create_group("D20")
+        f.create_dataset("D20/vr", (nt, nr), dtype=float)
+        f.create_dataset("D20/ell", (nt, nr), dtype=float)
+        f.create_dataset("D20/j_wave", (nt, nr), dtype=float)
+        f.create_dataset("D20/vr_ell_wave", (nt, nr), dtype=float)
+        f.create_dataset("D20/vr_delldr_wave", (nt, nr), dtype=float)
+        f.create_dataset("D20/sig_vr_wave", (nt, nr), dtype=float)
+        f.create_dataset("D20/sig_ell_wave", (nt, nr), dtype=float)
+        f.create_dataset("D20/sig_vr_ell_wave", (nt, nr), dtype=float)
+        f.create_dataset("D20/sig_dPidp_wave", (nt, nr), dtype=float)
+        f.create_dataset("D20/sig_Om_delldp_wave", (nt, nr), dtype=float)
+        f.create_dataset("D20/sig_visc_pp_wave", (nt, nr), dtype=float)
+        f.create_dataset("D20/sig_visc_rp_wave", (nt, nr), dtype=float)
+        f.create_dataset("D20/F_wave", (nt, nr), dtype=float)
+        f.create_dataset("D20/t_ex", (nt, nr), dtype=float)
+        f.create_dataset("D20/t_dep", (nt, nr), dtype=float)
 
         f.create_group("Pars")
         for key in pars:
@@ -1399,12 +1560,12 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Analyze accretion disks")
     parser.add_argument('files', nargs='+')
     parser.add_argument('--ncpu', nargs='?', default=1, type=int)
-    parser.add_argument('--Rmin', nargs='?', default=0.0, type=np.float)
-    parser.add_argument('--Rmax', nargs='?', default=np.inf, type=np.float)
-    parser.add_argument('--Tmin', nargs='?', default=0, type=np.float)
-    parser.add_argument('--Tmax', nargs='?', default=np.inf, type=np.float)
-    parser.add_argument('--window', nargs='?', default=10, type=np.float)
-    parser.add_argument('--interval', nargs='?', default=100, type=np.float)
+    parser.add_argument('--Rmin', nargs='?', default=0.0, type=float)
+    parser.add_argument('--Rmax', nargs='?', default=np.inf, type=float)
+    parser.add_argument('--Tmin', nargs='?', default=0, type=float)
+    parser.add_argument('--Tmax', nargs='?', default=np.inf, type=float)
+    parser.add_argument('--window', nargs='?', default=10, type=float)
+    parser.add_argument('--interval', nargs='?', default=100, type=float)
     parser.add_argument('--makeFrames', action='store_true')
     parser.add_argument('--archive', nargs='?', default='diskFluxArchive.h5')
     parser.add_argument('--noDisk', action='store_true')
